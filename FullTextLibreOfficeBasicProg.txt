@@ -1,0 +1,1701 @@
+' This program is distributed as-is in the hope that it will be useful,
+' but WITHOUT ANY WARRANTY; without even the implied warranty of
+' MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+' GNU Lesser General Public License for more details.
+
+' See: http://www.gnu.org/licenses
+
+' This program is free software: you can redistribute it and/or modify
+' it under the terms of the GNU Lesser General Public License as published by
+' the Free Software Foundation, either version 3 of the License, or
+' (at your option) any later version.
+
+'
+'  *****  BASIC  *****
+
+'option explicit
+
+'DIMENSION OBJECTS
+DIM dlg as object						'Main stepped dialog
+DIM oSheet as Object					'for the Calc page - in order to read or write
+dim dlgMashStep as object				'Dialog object for mash
+dim dlgSelect as object					'small dialog used to choose winner in remedyDuplicates 
+
+dim dlgIngr as object					'stepped dialog for editing ingredients or editing recipe
+dim thisTable as string					'Used mainly while editing ingrediengs
+
+'ID FIELDS - GENERALLY WILL STORE AN INDEX FROM A TABLE
+DIM recipeID as integer
+DIM mashID as integer					'used during recipe import (xml)
+dim mashProfileID as integer			'definitely used
+dim mashStepID as integer
+DIM styleID as integer
+dim equipmentID as integer
+
+dim selectedIngredientID as integer
+dim thisTableID as integer	'FERMENTABLE.ID or HOP.ID or MISC.ID or YEAST.ID - ID of this ingredient in it's table.
+
+
+'These arrays hold ID field (from table) for the element in listbox
+'If it starts with a, it might be an array
+dim arrayEquipmentID() as integer
+dim aListBoxChooseRecipeID() as integer
+dim alstIngredientsID() as integer
+dim aListMashProfilesID() as integer
+dim aMashStepsID() as integer			'these two look suspicously similar
+dim aListMashStepsID() as integer		'these two look suspicously similar
+dim aListStyleID() as integer
+dim alstChooseID() as integer			'used in dlgIngredient
+dim arrSelectItemID() as integer		'used in remedyDuplicates
+dim alstBrewLogID() as integer
+dim alstInventory() as variant			'this one needs to hold two values - table and ID
+
+
+
+'RECIPE VALUES
+DIM batchSize as single
+DIM boilOff as single
+DIM boilSize as single
+DIM efficiency as single
+
+
+'STYLE
+DIM styleOGmin as single
+DIM	styleOGmax as single
+DIM styleFGmin as single
+DIM	styleFGmax as single
+DIM styleABVmin as single
+DIM	styleABVmax as single
+DIM styleIBUmin as single
+DIM	styleIBUmax as single
+DIM	styleColormin as single
+DIM	styleColormax as single
+Dim styleNotes as String
+Dim styleProfile as String
+Dim styleIngredients as String
+Dim styleExamples as String
+
+'GENERAL PURPOSE VARIABLES
+DIM colWidths()							'global because used in getFermentables, getMash, getYeast, etc
+
+DIM eqGRAINABSORPTION as single
+DIM grainTemp as single
+
+DIM eqGrainSpecificHeat as single
+DIM hopAbsorption as single
+
+DIM ogPostBoil as single
+DIM ogPreBoil as single
+
+DIM previousStepTempC as single
+DIM selectedID as integer				'use for hop, misc, fermentable, etc in recipeHandler add ingredient"
+DIM spargeTemp as single
+
+DIM totalCost as single
+DIM totalGrain as single
+DIM totalFermentable as single
+DIM totalHops as single
+DIM boilHops as single
+DIM dryHops as single
+DIM totalIBU as single
+DIM totalMCU as single
+DIM totalPoints as single
+DIM totalWaterAddedQts as single
+DIM tunTemp as single
+DIM xmlFileName AS string
+DIM yeastAttenuation as double
+dim mashProfileName as string
+
+dim arrIngredients()
+dim arrMashDescription()
+
+dim recipeLoading as boolean
+dim dlgIngrAction as string
+
+dim dbgfile as integer
+dim isImperial as boolean
+
+dim currencySymbol as string
+GLOBAL CONST altCurrencySymbol = "€"	'Others :  	£ € $
+
+sub xxxmain
+	on error resume next
+	recipeLoading = False
+	GlobalScope.BasicLibraries.LoadLibrary("Tools")
+	GlobalScope.BasicLibraries.LoadLibrary("XrayTool")
+	recipeLoading = True
+	dlgRecipeShow()
+end sub
+
+sub main
+	dlgRecipeShow
+End Sub
+
+'UTILITY FUNCTIONS / SUBS
+Function round(num as double,dec as integer)
+	Round = CLng(num * 10 ^ dec ) / 10 ^ dec
+End Function
+
+function cSngTraperror(numStr as string)
+	on error goto handler
+	cSngTraperror = cSng(numStr)
+	exit function
+	handler:
+	cSngTraperror = 0
+end function
+
+Function isCalcRangeValid(Sheet as Object,rangeName as String)
+	'VALIDATE IF A NAMED RANGE EXISTS 
+	Dim oCell as Object 
+	on error goto RangeNotFound 
+	oCell = Sheet.getCellRangeByName(rangeName) 
+	isCalcRangeValid = true 
+	exit Function 
+	RangeNotFound: 
+	isCalcRangeValid = false 
+end Function 
+
+function esc(element)
+	'alternative to using the replace function to escape single quotes (for sql) but requires only one parm
+	esc=replace(element,"'","''")
+end function
+
+function pad(a,b)
+	'Adds b number of spaces to right side of passed string a. Used for some list boxes to keep spacing with header.
+	'these listboxes must have a mono (fixed pitch) font
+	if b > len(a) then
+	  pad = a & string(b-len(a), " " )
+	else
+	  pad=a
+	end if
+end function
+
+function confirmYesOrNo
+	'https://wiki.openoffice.org/wiki/Documentation/BASIC_Guide/Message_and_Input_Boxes_%28Runtime_Library%29
+	'OR Google: "openoffice msgbox yes no"
+	answer =  MsgBox ("Answer Yes or No",  4 + 48 + 256)
+end function
+
+function getPathName(ByVal x as string)
+	while (right(x,1) <> "/") and (right(x,1)<>"\")
+		x=left(x, len(x)-1)
+	wend
+	getPathName = x
+end function
+
+SUB debug(verbosity,msg)
+	exit sub
+	const verbosityLevel = 2	'only log events equal or greater than this level
+	if verbosity <= verbosityLevel then
+		if not isNull(msg) then
+			dbgfile = freefile()
+			open "/home/john/Documents/HomeBrew/debug.log" for append as #dbgfile
+			print #dbgfile, time() & " " & msg
+		   	close #dbgfile
+		end if
+	end if
+end sub
+
+Function FilePick(isSave,multiSelect)' As String
+	Dim FilePicker As Object
+	Dim FPtype(0) As Integer
+	'oSheet = ThisComponent.Sheets.getByName("Main")
+	startPath = dbGetSql("SELECT FILEPATH FROM PREFERENCES","TEXT")
+	FilePicker = CreateUnoService("com.sun.star.ui.dialogs.FilePicker")
+	if len( Dir( ConvertToURL(startPath) ) ) > 0 then
+		FilePicker.setDisplayDirectory(ConvertToURL(startPath))' ConvertToURL(startPath) )
+	end if
+	FilePicker.setMultiSelectionMode( multiSelect ) 
+	FilePicker.AppendFilter( "XML files (*.xml)", "*.xml" )
+    FilePicker.AppendFilter( "All files (*.*)", "*.*" )
+    FilePicker.SetCurrentFilter("XML files (*.xml)", "*.xml")
+    if isSave then
+		FPtype(0)=com.sun.star.ui.dialogs.TemplateDescription.FILESAVE_SIMPLE
+		FilePicker.initialize(FPtype())
+	end if
+	If FilePicker.execute() Then
+		sql="UPDATE PREFERENCES SET FILEPATH='" & getPathName(FilePicker.Files(0)) & "'"
+		sqlx(sql)
+		if multiSelect then
+			'xray FilePicker
+			FilePick=FilePicker.getSelectedFiles()
+		else
+			FilePick = ConvertToURL(FilePicker.Files(0))
+		end if
+	else 
+		FilePick = array()
+	End If
+End Function
+
+function ampersandConvert(target,direction)
+'XML and HTML encode characters such as "&" as "&amp;"
+'Unfortunate that I have to do this manually but didn't find built-in support for ampersand conversion in OO Basic
+'This is very inefficient, but not really noticeable except when importing something fairly large like BJCP XML
+'
+	dim sql as string
+	'dim target as string
+	dim ResultSet as object
+	if direction = "read" then
+		sql="SELECT ENCODED,CHAR from AMP"
+	else
+		sql="SELECT CHAR,ENCODED from AMP WHERE RW='RW'"
+	end if
+	ResultSet = dbGetResultSet(sql)
+	while ResultSet.next
+		target = Replace(target, ResultSet.getString(1),ResultSet.getString(2))
+	wend
+	ampersandConvert=target
+end function
+
+Function Replace(Source As String, Search As String, NewPart As String)
+  Dim Result As String
+  Dim StartPos As Long
+  Dim CurrentPos As Long
+
+  if isNull(Source) then
+  	Replace=""	'sometimes we might send a Null value. Easier to handle it here than in each calling routine.
+  	exit function
+  end if
+  Result = ""
+  StartPos = 1
+  CurrentPos = 1
+  If Search = "" Then
+    Result = Source
+  Else 
+    Do While CurrentPos <> 0
+      CurrentPos = InStr(StartPos, Source, Search)
+      If CurrentPos <> 0 Then
+        Result = Result + Mid(Source, StartPos, _
+        CurrentPos - StartPos)
+        Result = Result + NewPart
+        StartPos = CurrentPos + Len(Search)
+      Else
+        Result = Result + Mid(Source, StartPos, Len(Source))
+      End If                ' Position <> 0
+    Loop 
+  End If 
+  Replace = Result
+End Function
+
+function getUnits(units)
+	if isImperial then
+		'Imperial
+		select case ucase(units)
+			case "WEIGHT"
+				getUnits = "lb"
+			case "VOLUME"
+				getUnits = "gal"
+			case "WEIGHT_SMALL"
+				getUnits = "oz"
+			case "DEGREES"
+				getUnits = "F"
+			case "METERS/FEET"
+				getUnits = "ft"
+			case "GRAINABSORPTION"
+				getUnits = "qts/lb grain"
+			case "QT_OR_LITER"
+				getUnits = "qt"
+			case else
+				getUnits ="???"
+		end select
+	else
+		'Metric
+		select case ucase(units)
+			case "WEIGHT"
+				getUnits = "kg"
+			case "VOLUME"
+				getUnits = "L"
+			case "WEIGHT_SMALL"
+				getUnits = "g"
+			case "DEGREES"
+				getUnits = "C"
+			case "METERS/FEET"
+				getUnits = "M"
+			case "GRAINABSORPTION"
+				getUnits = "l/kg grain"
+			case "QT_OR_LITER"
+				getUnits = "L"
+			case else
+				getUnits ="???"
+		end select
+	end if
+end function
+
+
+function ConvertUnits(item as single,units,direction)
+'Metric-ize or Imerial-ize units. In a few cases it is called where we know the math is correct but the units may seem odd at first glance.
+	dim temp as single
+	dim myItem as string
+	dim ImperialUnits as boolean
+	myItem = trim(item)
+	'oSheet = ThisComponent.Sheets.getByName("Main")
+	'ImperialUnits = dbGetSql("SELECT IMPERIAL_UNITS FROM PREFERENCES","BOOLEAN")
+	ImperialUnits = isImperial	'should redo below so no new var
+	select case ucase(direction)
+		case "READ"
+			select case ucase(units)
+				case "GRAINABSORPTION"
+					if NOT ImperialUnits then
+						ConvertUnits = round(val(myItem),5)	'c 
+					else
+						ConvertUnits = round(val(myItem) * 0.479306,3)	'liters per kilogram to quarts per pound
+					end if
+				case "DEGREES"
+					if NOT ImperialUnits then
+						ConvertUnits = round(val(myItem),5)	'c 
+					else
+						ConvertUnits = round(val(myItem) * 9/5 + 32,5)	'c to f
+					end if
+				case "FLOAT"
+					ConvertUnits = round(CSng(myItem),5)
+				case "INTEGER"
+					ConvertUnits = CInt(myItem)
+				case "VOLUME"
+					if NOT ImperialUnits then
+						ConvertUnits = round(val(myItem),5)		'L 
+					else
+						ConvertUnits = round(val(myItem) / 3.78541,5)		'L to Gal
+					end if
+				case "WEIGHT"
+					if NOT ImperialUnits then
+						ConvertUnits = round(val(myItem),6)		'kg 
+					else
+						ConvertUnits = round(val(myItem) * 2.2046226,6)		'kg to lbs
+					end if
+				case "QT_OR_LITER"
+					if NOT ImperialUnits then
+						ConvertUnits = round(val(myItem),5)		'L
+					else
+						ConvertUnits = round(val(myItem) * 1.05669,5)		'L to qt
+					end if
+				case "WEIGHT_SMALL"
+					if myItem="" then
+						myItem=0	'workaround for empty value
+					end if
+					if NOT ImperialUnits then
+						ConvertUnits = round(val(myItem) * 1000,6)		'grams
+					else 
+						ConvertUnits = round(val(myItem) * 35.2739619,6)'kg to oz
+					end if			
+				case "RATIO1"
+					if NOT ImperialUnits then
+						'this is one that Beersmith likes to save as qts/lb
+						ConvertUnits = round(CSng(myItem) * 2.086351,5)		'L/kg to qts/lb
+					else
+						myItem = replace(myItem,"qt/lb","")
+						temp = cSng(trim(myItem))
+						ConvertUnits = round(temp,5)	
+					end if			
+				case "DAYS"
+					ConvertUnits = CSng(myItem) / 1440		'minutes to days
+				case "PERCENT"
+					ConvertUnits = round(CSng(myItem) / 100,3)
+				case "METERS/FEET"
+					ConvertUnits = round(CSng(myItem) * 3.28084,0)
+				case "TEXT"
+					'ConvertUnits = replace(myItem,"\n",chr(10))
+					ConvertUnits = ampersandConvert(myItem,"read")
+				case else
+					ConvertUnits = myItem
+			end select
+		case "WRITE"
+			on error goto badvalue
+			select case ucase(units)
+				case "GRAINABSORPTION"
+					if NOT ImperialUnits then
+						ConvertUnits = round(val(myItem),3)	'c 
+					else
+						ConvertUnits = round(val(myItem) / 0.479306,3)	'liters per kilogram to quarts per pound
+					end if
+				case "DEGREES"
+					if NOT ImperialUnits then
+						ConvertUnits = round(CSng(myItem),5)	
+					else
+						ConvertUnits = round((CSng(myItem)-32) * 5/9, 3)	'f to c		'kg to oz
+					end if			
+				case "FLOAT"
+					ConvertUnits = round(val(myItem),4)
+				case "INTEGER"
+					ConvertUnits = CInt(myItem)
+				case "VOLUME"
+					if NOT ImperialUnits then
+						ConvertUnits = round(CSng(myItem),5)	
+					else
+						ConvertUnits = round(CSng(myItem) * 3.78541, 5)		'gal to L
+					end if			
+				case "WEIGHT"
+					if NOT ImperialUnits then
+						ConvertUnits = round(val(myItem),7)	
+					else
+						ConvertUnits = round(val(myItem) / 2.2046226,5)	'lbs to kg
+					end if			
+				case "WEIGHT_SMALL"
+					if NOT ImperialUnits then
+						ConvertUnits = round(val(myItem)/1000,5)	'g to kg
+					else
+						ConvertUnits = round(val(myItem) * 0.0283495,5)	'oz to kg
+					end if			
+				case "RATIO1"
+					if NOT ImperialUnits then
+						ConvertUnits = round(CSng(myItem) / 2.086351,5)		'qts/lb to L/kg
+					else
+						ConvertUnits = round(CSng(myItem),3)
+					end if			
+					'ConvertUnits = round(CSng(myItem),3)		'qts/lb to L/kg
+					'ConvertUnits = round(CSng(myItem) * 2.086351,3)		'qts/lb to L/kg
+				case "DAYS"
+					ConvertUnits = CSng(myItem) * 1440		'days to minutes
+				case "PERCENT"
+					ConvertUnits = round(CSng(myItem) * 100, 3)
+				case "METERS/FEET"
+					ConvertUnits = round(CSng(myItem) / 3.28084, 3)
+				case "TEXT"
+					ConvertUnits = ampersandConvert(myItem,"write")
+				case else
+					ConvertUnits = myItem
+			end select
+			goto endline
+			badvalue:
+			msgbox myItem + "can't convert to " + units
+			endline:
+	end select
+	errorHandler:
+end function
+
+
+
+function getAmountAndTypeFromUnits(numericAmount,txtUnits)
+	'Similar to the convertUnits, this came about later due to need in MISC processing.
+	'parms in:
+	' numericAmount - may be weight, volume,or units
+	'	txtUnits - string may be mg, g, oz, tsp, Cup etc. From this we determine if amount is weight or volume or unit
+	'returns two element array containing:
+	'	weight in kg (if appropriate for unit), True (AMOUNT_IS_WEIGHT)
+	'	volume in liters (if appropriate), False (not weight)
+	'	numeric unit (where appropriate), False
+	
+	select case txtUnits
+		case "mg"
+			getAmountAndTypeFromUnits = array(numericAmount / 1000000,True)
+		case "g"
+			getAmountAndTypeFromUnits =  array(numericAmount / 1000,True)
+		case "oz"
+			getAmountAndTypeFromUnits = array(numericAmount * 0.0283495,True)
+		case "lb"
+			getAmountAndTypeFromUnits = array(numericAmount * 0.453592,True)
+		case "kg"
+			getAmountAndTypeFromUnits = array(numericAmount,True)
+		case "ml"
+			getAmountAndTypeFromUnits = array(numericAmount / 1000,False)
+		case "tsp"
+			getAmountAndTypeFromUnits = array(numericAmount / 202.884,False)	'tsp to liter
+		case "tbsp"
+			getAmountAndTypeFromUnits = array(numericAmount / 67.628,False)	'tbsp to liter
+		case "Cup"
+			getAmountAndTypeFromUnits = array(numericAmount / 4.22675,False)
+		case "pt"
+			getAmountAndTypeFromUnits = array(numericAmount / 2.11337,False)
+		case "qt"
+			getAmountAndTypeFromUnits = array(numericAmount / 1.05668,False)
+		case "l"
+			getAmountAndTypeFromUnits = array(numericAmount,False)
+		case "gal"
+			getAmountAndTypeFromUnits = array(numericAmount / 0.264171874,False)
+		case else '   "Items"      ANYTHING ELSE INCLUDING ITEMS JUST WRITE THE VALUE
+			getAmountAndTypeFromUnits = array(numericAmount,False)
+	end select
+end function
+
+function getAmountAndTypeFromUnitsFromDB(numericAmount,txtUnits,amountIsWeight)
+	' same as last routine except opposite direction... kg/l to oz/lb/gallon
+	' main difference is division becomes multiplication and vise-versa
+	'   later... changed it to include amountIsWeight...
+	
+	select case txtUnits
+		case "mg"
+			getAmountAndTypeFromUnitsFromDB = array(numericAmount * 1000000,True)
+		case "g"
+			getAmountAndTypeFromUnitsFromDB =  array(numericAmount * 1000,True)
+		case "oz"
+			' oz is the only measure that is ambiguous. Could be by weight or volume.
+			if amountIsWeight = True then
+				'oz convert to kg
+				getAmountAndTypeFromUnitsFromDB = array(numericAmount / 0.0283495,True)
+			else
+				'oz convert to liter  (math is close, but not the same)
+				'Google is your friend for these formulas... search "oz to liters" or "oz to kilograms"
+				getAmountAndTypeFromUnitsFromDB = array(numericAmount / 0.0295735,True)
+			end if				
+		case "lb"
+			getAmountAndTypeFromUnitsFromDB = array(numericAmount / 0.453592,True)
+		case "kg"
+			getAmountAndTypeFromUnitsFromDB = array(numericAmount,True)
+		case "ml"
+			getAmountAndTypeFromUnitsFromDB = array(numericAmount * 1000,False)
+		case "tsp"
+			getAmountAndTypeFromUnitsFromDB = array(numericAmount * 202.884,False)	'tsp to liter
+		case "tbsp"
+			getAmountAndTypeFromUnitsFromDB = array(numericAmount * 67.628,False)	'tbsp to liter
+		case "Cup"
+			getAmountAndTypeFromUnitsFromDB = array(numericAmount * 4.22675,False)
+		case "pt"
+			getAmountAndTypeFromUnitsFromDB = array(numericAmount * 2.11337,False)
+		case "qt"
+			getAmountAndTypeFromUnitsFromDB = array(numericAmount * 1.05668,False)
+		case "l"
+			getAmountAndTypeFromUnitsFromDB = array(numericAmount,False)
+		case "gal"
+			getAmountAndTypeFromUnitsFromDB = array(numericAmount * 0.264171874,False)
+		case else '   "Items"      ANYTHING ELSE INCLUDING ITEMS JUST WRITE THE VALUE
+			getAmountAndTypeFromUnitsFromDB = array(numericAmount,False)
+	end select
+end function
+
+sub kludgeFixMashName(id)
+	'BeerTarget exports may have empty MASH name. Will name if for the offending recipe
+	dim newMashName as string
+	rs=dbGetResultSet("SELECT NAME FROM MASH WHERE ID=" & id)
+	rs.next
+	if (rs.getString(1)="") then
+		rs=dbGetResultSet("SELECT NAME FROM RECIPE WHERE ID=" & recipeID)
+		rs.next
+		newMashName=rs.getString(1) & "_mash"
+		sqlx("UPDATE MASH SET NAME='" & newMashName & "' WHERE ID=" & id)
+	end if
+end sub
+
+sub kludgeFixWaterGrainRatio(id)
+' Have come across mash exports (BeerXML format) that didn't have correct values in water_grain_ratio part of mash_step
+' (probably had an old version of something)
+' Here we will look at display_infuse_amt to try and deduce what should have been in wgr
+' I don't think this generally happens to recipe exports, just mash exports from another popular software package
+	dim amtAndUnits()
+	dim dispInfuseAmt as string
+	dim sql as string
+	dim wgr as single
+	dim amt as single
+	dim units as string
+	'id = 74 test value
+	rs=dbGetResultSet("SELECT WATER_GRAIN_RATIO,DISPLAY_INFUSE_AMT FROM MASH_STEP WHERE ID=" & id)
+	rs.next
+	wgr = rs.getFloat(1)
+	dispInfuseAmt = rs.getString(2)
+	if wgr = 0 then
+		amtAndUnits = split(dispInfuseAmt," ")
+		
+		amt = amtAndUnits(0)
+		units = amtAndUnits(1)
+		
+		' Have noted that the DISPLAY_INFUSE_AMT field is based on 10 gallons
+		' To get proper value to store in db (L/kg) need to convert
+		'Google "convert 1 quarts per pound to liters per kilogram" find the factor is 2.08635
+		if units = "qt" then
+			amt = round(amt / 10 * 2.08635,3)
+			sql = "UPDATE MASH_STEP SET WATER_GRAIN_RATIO = " & amt & " WHERE ID=" & id
+			sqlx(sql)
+		elseif units = "l" then
+			'have not imported recipe with metric display amounts, but will assume for now
+			'that they are saved similarly based on known quantity (guessing would be 10 liters)
+			'will have to prove this out to see if amt is based on 10 Liters instead of gallons
+			amt = round(amt / 10,3)
+			sql = "UPDATE MASH_STEP SET WATER_GRAIN_RATIO = " & amt & " WHERE ID=" & id
+			sqlx(sql)
+		end if
+	end if
+end sub
+
+'XML RELATED FUNCTIONS
+function getObjectFromXML(strXML,tag)
+' these can help during debug
+	'oSheet = ThisComponent.Sheets.getByName("Main")
+	' Pulls values between tags from string strXML
+	'debug(1,"Len of strXML is:" & str(len(strXML)) & "val=" & strXML)
+	debug(1,"getObjectFromXML tag is:" & tag)
+	dim sStart as integer
+	dim sEnd as integer
+	tagopen=tag
+	sStart = instr(strXML,"<" & tag & ">")
+	if sStart =  0 then
+		sStart = instr(strXML,"<" & tagopen & " ") 'in case there is extra attribute in opening tag - ie: <category id="1">
+		i=len(tagopen)+1
+		char = mid(strXML,sStart+i,1)
+		while char <> ">" and i < 30
+			tagopen=tagopen & char
+			i = i + 1
+			char = mid(strXML,sStart+i,1)
+		wend
+	end if
+	sEnd = instr(strXML,"</" & tag & ">")
+	if sStart > 0 and sEnd > sStart then
+		sMid = mid(strXML,sStart + len("<" & tagopen & ">"),sEnd - sStart - len("<" & tagopen & ">") )
+		strXML = mid(strXML,1,sStart-1) & mid(strXML,sEnd+len("</" & tag & ">"), len(strXML)-sEnd )
+		getObjectFromXML=array(tagopen,trim( sMid ) )
+	else
+		getObjectFromXML=array(tagopen,Null)
+	end if
+end function
+
+'XML IMPORT STYLES
+'one shot routine but you never know if you'll need it again
+'I had another I used for the 2015 xml and lost all the work when LibreOffice crashed
+'But.. the db was still intact and code was worse than this, and this might be very
+'close to working on the 2015 xml file.
+' This is for educational purposes and could be good example of how NOT to name variables
+'amoung other things.
+sub importbjcp2008(optional filename)
+	'open Style file and populate style table
+	Dim FileNo As Integer
+	dim fname as string
+	dim xFileContents as string
+	dim line as string
+	dim cat()
+	dim subcat()
+	dbInit()		'### DATABASE CONNECT ###
+	dim extras()
+	sqlx("DELETE FROM STYLE WHERE STYLE_GUIDE='BJCP 2008'; ")
+	fname = FilePick(False,False) ' sending boolean, false is for open, true for save
+	if len(fname) > 0 then
+		FileNo = Freefile
+		Open fname For Input As FileNo
+		xFileContents = ""
+		while not eof(FileNo)
+			line input #FileNo, line
+			xFileContents = xFileContents & ampersandConvert(line,"read") & chr(13)
+			'xFileContents = xFileContents & line & chr(13) ' much speedier, used during development
+			if instr(line,"/category") > 0 then
+				cat = getObjectFromXML(xFileContents,"category")(1)
+				sql="INSERT INTO STYLE (NAME,CATEGORY,CATEGORY_NUMBER,STYLE_LETTER,"_
+				& "STYLE_GUIDE,TYPE,OVERALLIMPRESSION,AROMA,APPEARANCE,FLAVOR,MOUTHFEEL,"_
+				& "COMMENTS,HISTORY,INGREDIENTS,"_
+				& "EXAMPLES,OG_MIN,OG_MAX,FG_MIN,FG_MAX,IBU_MIN,IBU_MAX,COLOR_MIN,"_
+				& "COLOR_MAX,ABV_MIN,ABV_MAX) VALUES ("
+				catName = getObjectFromXML(cat(1),"name")(1)
+				' getObjectFromXML(cat(1),"name")(1)
+				subcat = getObjectFromXML(cat(1),"subcategory")(1)
+				gosub writeit
+				while not isNull(subcat(1))
+					subcat = getObjectFromXML(cat(1),"subcategory")(1)
+					gosub writeit
+				wend
+				xFileContents = ""
+			end if			
+		wend
+		exit sub
+		writeit:
+			vals = ""
+			if not isNull(subcat(1)) then
+				catNumber = replace(subcat(0),"subcategory id=""","")
+				catNumber = replace(catNumber,"""","")
+				styleLetter = right(catNumber,1)
+				catNumber = replace(catNumber,styleLetter,"")
+				subcatName = getObjectFromXML(subcat(1),"name")(1)
+				vals = "'" & subcatName & "'," 	'name
+				vals = vals & "'" & catName & "',"	'catagory name
+				vals = vals & catNumber & ","
+				vals = vals & "'" & styleLetter & "',"
+				vals = vals & "'BJCP 2008',"
+				if instr(subcatName & catName,"Lager") > 0 then
+					vals = vals & "'Lager',"
+				elseif instr(subcatName & catName,"Ale") > 0 then
+					vals = vals & "'Ale',"
+				elseif instr(subcatName & catName,"Mead") > 0 then
+					vals = vals & "'Mead',"
+				elseif instr(subcatName & catName,"Cider") > 0 then
+					vals = vals & "'Cider',"
+				else
+					vals = vals & "'',"
+				end if
+				for each x in split("impression,aroma,appearance,flavor,mouthfeel,comments,ingredients,examples,history",",")
+					yyy = getObjectFromXML(subcat(1),x)(1)
+					if isNull(yyy) then
+						yyy=""
+					else
+						yyy = replace(yyy,"<em>","")	'my source xml file (found on web) contained some html style markup
+						yyy = replace(yyy,"</em>","")
+						yyy = replace(yyy,"<li>","")
+						yyy = replace(yyy,"</li>","")
+					end if
+					vals = vals & "'" & esc(yyy) & "',"
+				next
+				stats = getObjectFromXML(subcat(1),"stats")(1)
+				if not isNull(stats(1)) then
+					for each statx in split("og,fg,ibu,srm,abv",",")
+						lowHigh = getObjectFromXML(stats,statx)(1)
+						if not isNull(lowHigh) then
+							'becomes Null when <stats><exceptions>varies</exceptions></stats> as in Fruit beers cat 17
+							vals = vals & getObjectFromXML(lowHigh,"low")(1) & ","
+							vals = vals & getObjectFromXML(lowHigh,"high")(1) & ","
+						else
+							vals = vals & "0,0,"
+						end if
+					next
+				else
+					vals = vals & "0,0,0,0,0,0,0,0,0,0,"
+				end if
+				vals = left(vals,len(vals)-1) & ")"
+				sqlx(sql & vals)	'yeah, it's all sql
+			end if
+		return
+	end if
+end sub
+
+
+'XML IMPORT STYLES
+sub importFileOpenStylesXML(optional filename)
+	'open Style file and populate style table
+	Dim FileNo As Integer
+	dim fname as string
+	dim xFileContents as string
+	dim line as string
+	dbInit()		'### DATABASE CONNECT ###
+	dim extras()
+	fname = FilePick(False,False) ' sending boolean, false is for open, true for save
+	if len(fname) > 0 then
+		FileNo = Freefile
+		Open fname For Input As FileNo
+		xFileContents = ""
+		while not eof(FileNo)
+			line input #FileNo, line
+			xFileContents = xFileContents + ampersandConvert(line,"read") + chr(13)
+			if instr(line,"</STYLE>") > 0 then 
+				stylePart = getObjectFromXML(xFileContents,"STYLE")(1)
+				styleID = importBasedOnBeerXmlTable(Statement,stylePart,"STYLE",True,extras,False,foundRequired,errMsg)
+				xFileContents = ""
+			end if
+		wend
+	end if 
+end sub
+
+'XML IMPORT MASH PROFILES
+sub importFileOpenMashesXML(optional filename)
+	'open recipe file and populate mash and mash_step tables
+	Dim FileNo As Integer
+	dim fname as string
+	dim xFileContents as string
+	dim line as string
+	dbInit()		'### DATABASE CONNECT ###
+	dim extras()
+	t1 = getsystemticks()	' I was timing some larger files on a slower system to see how long it took, not used now
+	fname = FilePick(False,False) ' sending boolean, false is for open, true for save
+	if len(fname) > 0 then
+		FileNo = Freefile
+		Open fname For Input As FileNo
+		xFileContents = ""
+		while not eof(FileNo)
+			line input #FileNo, line
+			xFileContents = xFileContents + line + chr(13)
+			if instr(line,"</MASH>") > 0 then 
+				mashpart = getObjectFromXML(xFileContents,"MASH")(1)
+				mashID = importBasedOnBeerXmlTable(Statement,mashpart,"MASH",True,extras,False,foundRequired,errMsg)
+				redim extras(0)
+				extras(0) = array("MASH_ID",mashID)
+				while len(mashpart) > 0 
+					importBasedOnBeerXmlTable(Statement,mashpart,"MASH_STEP",True,extras,False,foundRequired,errMsg)
+				wend
+				redim extras()
+				xFileContents = ""
+			end if
+		wend
+	end if 
+end sub
+
+'XML IMPORT
+sub importFileOpenRecipeXML(optional filename)
+	'open recipe file and read to string variable
+	Dim FileNo As Integer
+	dim fname as string
+	dim recipeFileContents as string
+	dim line as string
+	dim fileNames() as string
+	dim counter as integer
+	t1 = getsystemticks()
+	fileNames = FilePick(False,True) ' sending boolean, false is for open, true for save
+	if ubound(fileNames) > -1 then
+		for each fileName in fileNames	' You can select multiple files with one recipe each
+			if len(fileName) > 0 then
+				debug(1,"importFileOpenRecipeXML filename: " & fileName)
+				FileNo = Freefile
+				Open ConvertToURL(fileName) For Input As FileNo
+				
+				while not eof(FileNo)	' You can select one file with multiple recipes or multiple files with one recipe
+										' Or you could do any combination.
+					recipeFileContents = ""
+					line = ""
+					counter = 0
+					while not eof(FileNo) and instr(line,"</RECIPE>") = 0
+						line input #FileNo, line
+						recipeFileContents = recipeFileContents + line + chr(13)
+						counter = counter + 1
+					wend
+					debug(1,"Lines in this recipe=" & counter)
+					recipeFileContents = ampersandConvert(recipeFileContents,"read")
+					importRecipeXML(recipeFileContents)
+				wend
+				close (FileNo)
+			end if 
+		next
+	end if
+end sub
+
+sub importRecipeXML(xml)
+	Dim foundRequired as boolean
+	Dim errMsg as string
+	'dim fhmy as string	'can be FERMENTABLE,HOP,MISC,YEAST
+	dim extras()	'this array only used when importing mash steps in order to set MASH_ID in MASH_STEP record
+	'on error goto generalError
+	dim ingredientsXML(3)
+	dbInit()		'### DATABASE CONNECT ###
+	errMsg = ""
+	
+	ingredients = array("FERMENTABLES","HOPS","MISCS","YEASTS")
+	for i = 0 to 3
+		'xml sections "FERMENTABLES","HOPS","MISCS","YEASTS" get stored in this array
+		ingredientsXML(i) = getObjectFromXML(xml,ingredients(i))(1)
+	next
+
+	ingredient = array("FERMENTABLE","HOP","MISC","YEAST")
+	'Within each section these are the tag names for each ingredient record	
+	
+	
+	equipment = getObjectFromXML(xml,"EQUIPMENT")(1)
+	style = getObjectFromXML(xml,"STYLE")(1)
+	mashpart = getObjectFromXML(xml,"MASH")(1)
+	recipe = getObjectFromXML(xml,"RECIPE")(1)
+	
+	'At this point, all required major sections of the recipe have been pulled from between
+	'<RECIPE> and </RECIPE> tags and stored in variables for further processing. (Still in xml format)
+	
+	if not isNull(recipe) then
+		'We should always pass this test, but just to be sure...
+		
+		'In case we encounter an error processing part of the recipe, we want to be able to
+		'rollback database changes. Turniung off AUTOCOMMIT will allow this.
+		'Turn off autocommit but don't lose anything previously written to db
+		Statement.executeQuery("COMMIT; SET AUTOCOMMIT FALSE")
+		
+		'Boolean flag will test later to make sure ALL "required" elements were provided
+		foundRequired=TRUE	'Initialize to True, will go false if any required part is missing
+		
+		'The function being called here uses the BEERXML table as a guide to what fields belong
+		'in each record type.
+		
+		'Start processing RECIPE
+		recipeID = importBasedOnBeerXmlTable(Statement,recipe,"RECIPE",True,extras,False,foundRequired,errMsg)
+
+		'Next process ingredients (FERMENTABLES,HOPS,MISCS,YEASTS)
+		for i = 0 to 3
+			if not isNull(ingredientsXML(i)) then
+				do
+					thisItem = getObjectFromXML(ingredientsXML(i),ingredient(i))(1)'the smaller container - <FERMENTABLE>,<HOP>, etc.
+					if not isNull(thisItem) then
+						importBasedOnBeerXmlTable(Statement,thisItem,ingredient(i),False,extras,True,foundRequired,errMsg)
+					end if
+				loop until isNull(thisItem)
+			else
+				debug(1,"Null: " & ingredient(i) )
+			end if
+		next
+		redim ingredientsXML()
+
+		'Process EQUIPMENT
+		equipID = 0	'might switch to use our default
+		if not isNull(equipment) then
+			equipID = importBasedOnBeerXmlTable(Statement,equipment,"EQUIPMENT",False,extras,False,foundRequired,errMsg)
+		end if
+	
+		'Process MASH
+		if not isNull(mashpart) then
+			mashID = importBasedOnBeerXmlTable(Statement,mashpart,"MASH",True,extras,False,foundRequired,errMsg)
+			redim extras(0)
+			extras(0) = array("MASH_ID",mashID)	'This is where "extras" comes in.
+			while len(mashpart) > 0
+				'Process MASH_STEPS
+				importBasedOnBeerXmlTable(Statement,mashpart,"MASH_STEP",True,extras,False,foundRequired,errMsg)
+			wend
+		end if
+		redim extras()
+		
+		'Process STYLE
+		styleID = importBasedOnBeerXmlTable(Statement,style,"STYLE",False,extras,False,foundRequired,errMsg)
+	
+		'All sections have now been processed. If any required section was missing then boolean flag
+		'foundRequired would be false. If all is good, we commit changes and will update recipe record
+		'with STYLE,MASH, and EQUIPMENT ID's (these were unknown at the time recipe record was created)
+		if foundRequired then
+			Statement.executeQuery("COMMIT; SET AUTOCOMMIT TRUE")
+			if recipeID > 0 then
+				Statement.executeQuery( "UPDATE RECIPE SET STYLE_ID=" & cStr(styleID) _
+				& ",MASH_ID=" & cStr(mashID)_
+				& ",EQUIPMENT_ID=" & cStr(equipID)_
+				& " WHERE ID=" & cStr(recipeID) )
+				Statement.executeQuery( "UPDATE MASH SET RECIPE_ID =" & cStr(recipeID) & " WHERE ID=" & cStr(mashID) )
+			end if
+			if recipeID > 0 then
+				'Not needed for GUI
+				readDBtoSheet(recipeID)
+			end if
+		else
+			'Whoa, something was missing. Abort.
+			Statement.executeQuery("ROLLBACK; SET AUTOCOMMIT TRUE")
+			msgbox "Required field/data missing from recipe file, Import aborted." & chr(13) & errMsg
+		end if
+		exit sub
+		generalError:
+			Statement.executeQuery("ROLLBACK; SET AUTOCOMMIT TRUE")
+			msgbox "Unknown error with import. Aborting."
+	else
+		debug(2,"importRecipeXML: Variable recipe was null. Unable to pull RECIPE from XML.")
+	end if	'if not isNull(recipe)
+end sub
+
+function importBasedOnBeerXmlTable(oStatement,section,table,alwaysInsert,extraField as array,addIngredients,foundRequired,errMsg)
+'May write to about any table in database and 
+'relies greatly on information from the BeerXML table.
+'
+'Parameters passed in are"
+'	oStatement		- Database handle
+'	section			- Section of XML hopefully containing all the fields required
+'	table			- Database table fields should be stored within
+'	alwaysInsert	- Boolean value telling function to always insert a new record. Mash is an example where we always insert.
+'	extraField		- Used when processing MASH_STEP. This must be associated to a MASH (profile) record, so mashID is passed in.
+'						and written to the MASH_STEP record. A MASH profile record consists of one or more MASH_STEP records.
+'	addIngredients	- Boolean that enables section inserting into ingredients table. There's probably a simple way to eliminate
+'						need for this flag.
+'	foundRequired	- Instead of making this flag a global var, decided to pass (by reference) into function. If altered
+'						within, it will be changed in the calling routine as well. If ever goes false, we abort import.
+'	errMsg			- If something required is missing from XML, we pass/alter this back to provide message indicating what error was.
+
+'Returns id of inserted (or found) element. 
+'Consumes section as it is processed. Alters foundRequired,errMsg when needed.
+
+	Dim tags(1)
+	Dim vals(1)
+	DIM amountUnits(1)
+	dim saveAmount as variant
+	
+	debug(5,"importBasedOnBeerXmlTable section=" & section)
+	debug(1,"importBasedOnBeerXmlTable table=" & table)
+
+	
+	tags(0)="NAME"
+	element = getObjectFromXML(section,"NAME")(1)
+	debug(1,"Found: " & element)
+	if isNull(element) then
+		'xray section
+		section=""
+		exit function
+	end if
+
+	vals(0)="'" & esc(element) & "'"
+
+	id=null
+	'UNLESS alwaysInsert is True, we check if this element already exists in it's table. All
+	'tables include NAME field and for most tables these are unique. Exception is MASH.
+	'
+	if NOT alwaysInsert then
+		sql="SELECT ID FROM " & table & " WHERE NAME='" & esc(element) & "'"
+		rs = oStatement.executeQuery(sql)
+		if rs.next then
+			id = rs.getInt(1)
+		end if
+	end if
+	beerXMLParent = table
+	
+	if isNull(id) then
+		' If id is Null then this item does not yet exist in database table - ie: a new HOP... If so, we will add to table.
+		' Next part gets all the tags this section should contain from BeerXML table
+		sql = "SELECT TAG,DATATYPE,REQUIRED FROM BEERXML "_
+		& "WHERE PARENT = '" & beerXMLParent & "' and DATATYPE NOT LIKE 'RECORD%' AND TAG <> 'NAME' AND IMPORT=TRUE"
+
+		debug(2,"importBasedOnBeerXmlTable: " & sql)
+
+		rs = oStatement.executeQuery(sql)
+		i = 1
+		for each x in extraField
+			redim preserve tags(i)	'preserve retains the values already in the array
+			redim preserve vals(i)	'i increments each loop, increasing the array size
+			tags(i)=x(0)
+			vals(i)=x(1)
+			i = i + 1
+		next
+		tagAndDataType = "importBasedOnBeerXmlTable: " & table & "fields: "
+		while rs.next
+			'Looping thru BeerXML table getting tags,datatype, and required flag for this section, then we grab that element from the XML section.
+			tag = rs.getString(1)
+
+			tagAndDataType = tagAndDataType & "," & tag
+			element = getObjectFromXML(section,tag)(1)
+			
+			'these elements are needed when writing ingredients table
+''			if tag="INFUSE_AMOUNT" then
+'				saveInfuseAmount=element	'may have to use this when WGR not provided
+'			end if
+			if tag="AMOUNT" then
+				if not isNull(element) then
+					saveAmount=element	'have found recipes with no amount specified for yeast
+				else
+					saveAmount=0
+				end if
+			end if
+			if tag="TIME" then
+				saveTime = element
+			end if
+			if tag="FORM" then
+				saveForm = element
+			end if
+			if tag="USE" then
+				saveUse = element
+			end if
+			if tag="DISPLAY_AMOUNT" then
+				displayAmount = element
+			end if
+			
+			if tag="WATER_GRAIN_RATIO" then
+				debug(1,"WATER_GRAIN_RATIO - can we calc with INFUSE_AMOUNT=" & saveInfuseAmount)
+				if not isNull(element) then
+					if instr(element,"qt/lb") > 0 then
+						element = split(element," ")(0)
+						element = cSngTraperror(element) * 2.08635
+					elseif instr(element,"l/kg") > 0 then
+						element = split(element," ")(0)
+						element = cSngTraperror(element)
+					else
+					'	I doubt we get here but...
+						element = cSngTraperror(element)
+					end if
+				else
+					'Notes for errors encountered importing recipes from BrewTarget
+					'- Apparently they don't export WATER_GRAIN_RATIO
+					'- in fairness to BrewTarget, it is an optional extension and not required
+					'- will need to find a kludge work around to get the true intended amt
+					' - but for now will substitute a common WGR here
+					'Also, and this IS a problem and IMO fails to follow the BeerXML standard...
+					'- Exports within recipes MASH with empty name field - ""<MASH><NAME></NAME>"
+					'- I will need a kludge for this as well
+					'- MASH_STEP(s) ARE named however
+					'could be a deal breaker on importing from BrewTarget.
+					
+					'as long as all fermentables have been read, should be able to figure this out
+					'msgbox("No water_grain_ratio specified, dang...")
+					element = 1.25 * 2.08635	'quarts/lb to liters/kg
+				end if
+			end if
+
+			if tag="BETA" and element="" then
+				element="0"	'fix for recipes that didn't include beta in hop record
+			end if
+'			if instr(",ADD_AFTER_BOIL,COARSE_FINE_DIFF,MOISTURE,DIASTATIC_POWER,PROTEIN,MAX_IN_BATCH,POTENTIAL",tag) > 0 and element="" then
+'				element=0	'fix for recipes that didn't include above in FERMENTABLE record
+'			end if
+
+			if saveAmount="" then
+				saveAmount = 0	'fix for recipe where ingredient has no amount (found yeast this way) https://www.brewtoad.com/recipes/nut-brown-ale-102
+			end if
+			
+			'Check that required fields are present. We will abort the import if required field is missing from XML.
+			if rs.getBoolean(3) = true then 'true
+				foundRequired = foundRequired AND (NOT isNull(element)) 'any missing required element will set false
+			end if
+			if not foundRequired then
+				if errMsg="" then
+					'Could work some logic in here to append all required but missing values lbut for now only shows first found
+					errMsg = "Missing: " & table & "/" & tag	'first error
+				end if
+			end if
+			
+			if tag = "COLOR" then
+				debug(2,"Element - Color=" & element)
+			end if
+			
+			if not isNull(element) then
+				if len(element) > 0 then
+					redim preserve tags(i)
+					redim preserve vals(i)
+					tags(i) = tag
+					if rs.getString(2) = "TEXT" then
+						vals(i) = "'" & esc(element) & "'"	'text needs to be quoted in sql
+					else
+						vals(i) = element
+					end if
+					i = i + 1
+				end if
+			else
+			'	msgbox tag & " is null"
+			end if
+		wend
+		debug(2,tagAndDataType)
+		'xray tags
+'		if table = "MISC" then
+'			sql="INSERT INTO " & table & " (" & join(tags,",") & ") VALUES (" & join(vals,",") & "); CALL IDENTITY();"
+			'msgbox sql
+'		end if
+		sql="INSERT INTO " & table & " (" & join(tags,",") & ") VALUES (" & join(vals,",") & "); CALL IDENTITY();"
+		debug(1,"importBasedOnBeerXmlTable: " & sql)
+		'msgbox sql
+		rs = oStatement.executeQuery(sql)	 ' will return the autoincrement ID
+		if rs.next then
+			id = rs.getString(1)
+			if table = "MASH_STEP" then kludgeFixWaterGrainRatio(id)
+			if table = "MASH" then kludgeFixMashName(id)	'tanks BT
+		end if
+		
+	else
+		'Record already exists so need to grab some values now in case this is an ingredient section
+		debug(1,"trying to pull amount from xml. xml section:" & section)
+		saveAmount = getObjectFromXML(section,"AMOUNT")(1)
+		if isNull(saveAmount) then saveAmount = "0"
+		if saveAmount="" then saveAmount = "0"
+		saveTime = getObjectFromXML(section,"TIME")(1)
+		saveForm = getObjectFromXML(section,"FORM")(1)
+		saveUse = getObjectFromXML(section,"USE")(1)
+		displayAmount = getObjectFromXML(section,"DISPLAY_AMOUNT")(1)
+	end if
+	
+	if addIngredients = True then
+		select case table
+			case "FERMENTABLE"
+				sql = "INSERT INTO INGREDIENTS (VERSION,AMOUNT,TABLE_NAME,TABLE_ID,RECIPE_ID) VALUES (1," _
+				& saveAmount & ",'FERMENTABLE'," & id & "," & recipeID & ")"
+				oStatement.executeQuery(sql)
+			case "HOP"
+				sql = "INSERT INTO INGREDIENTS (VERSION,AMOUNT,TABLE_NAME,TABLE_ID,RECIPE_ID,TIME_FIELD,FORM,USE) VALUES (1," _
+				& saveAmount & ",'HOP'," & id & "," & recipeID & "," & saveTime & ",'" & saveForm & "','" & saveUse & "')"
+				oStatement.executeQuery(sql)
+			case "MISC"
+				'Long winded explanation: Search comment 20160701alpha
+
+				amountUnits = split(displayAmount," ")	'this needs to stay an array for the following test
+				if ubound(amountUnits) < 1 then
+					amountUnits=array(0,"undefined")	'rare (in my experience) user will have to correct
+				end if
+				sql = "INSERT INTO INGREDIENTS (VERSION,AMOUNT,AMOUNT_UNITS,TABLE_NAME,TABLE_ID,RECIPE_ID,TIME_FIELD,USE) "
+				sql=sql & "VALUES (1," & saveAmount & ",'" & amountUnits(1) & "','MISC'," & id & "," & recipeID & "," & saveTime & ",'" & saveUse & "')"
+				oStatement.executeQuery(sql)
+				
+
+				miscInventoryUnits = dbGetSql("SELECT UNITS FROM MISC WHERE ID="&id,"TEXT")
+				'This section is duplicate from part of dlgRecipeGetMiscs (except for variable name id in update sql)
+				if instr(",mg,g,oz,lb,kg,ml,tsp,tbsp,Cup,pt,qt,l,gal,Items,","," & miscInventoryUnits & ",") = 0 then
+				' if UNITS not set in MISC table, attempt to find in DISPLAY_AMOUNT
+					'msgbox "Units not set for " & itemName
+					arrDisplayAmount = split(displayAmount," ")
+					if ubound(arrDisplayAmount) = 1 then
+						miscInventoryUnits = arrDisplayAmount(1)
+						sqlx("UPDATE MISC SET UNITS='" & miscInventoryUnits & "' WHERE ID=" & id)
+					else
+						miscInventoryUnits = "unknown"
+					end if
+				end if
+
+				
+			case "YEAST"
+				sql = "INSERT INTO INGREDIENTS (VERSION,AMOUNT,TABLE_NAME,TABLE_ID,RECIPE_ID) VALUES (1," _
+				& saveAmount & ",'YEAST'," & id & "," & recipeID & ")"
+			'	msgbox sql
+				debug(1,"importBasedOnBeerXmlTable Yeast insert: " & sql)
+				oStatement.executeQuery(sql)	
+		end select
+	end if
+	importBasedOnBeerXmlTable = id	'return the ID (could be new or existing)
+end function
+
+sub test
+a=split("1"," ")
+msgbox ubound(a)
+if ubound(a) then
+	xray a
+end if
+
+end sub
+
+Function FileSaveAs()
+	fname = FilePick(True,False)	' TRUE is for Save, FALSE for Open
+	if fname <> "" then
+		FileSaveAs = recipeExportToXML(fname)
+	end if
+end Function
+
+
+sub EmailAttachment
+'some starter code for adding new capability to email a recipe
+'source : https://forum.openoffice.org/en/forum/viewtopic.php?f=45&t=71337
+	dim mAttachment(0)
+	If GetGuiType() = 1 Then
+	   objMail = createUnoService("com.sun.star.system.SimpleSystemMail")
+	Else
+	   objMail = createUnoService("com.sun.star.system.SimpleCommandMail")
+	End If
+	objMailClient = objMail.querySimpleMailClient()
+	objMessage = objMailClient.createSimpleMailMessage()
+	objMessage.setRecipient(strEmailAddress)
+	objMessage.setSubject(strSubject)
+	mAttachment(0) = ConvertToURL(FilePick(False,False) )
+	objMessage.setAttachement(mAttachment())
+	objMailClient.sendSimpleMailMessage(objMessage, 0)
+end sub
+
+'EXPORT RECIPE TO XML
+function recipeExportToXML(fname)
+	handle = FreeFile()
+	beerxml_version = 1
+	
+	dim recipeID as integer	'dim these locally so not to disturb global val
+	dim styleID as integer
+	dim equipmentID as integer
+	dim mashID as integer
+	
+	if fname<>""  then
+		Open fname For Output As handle
+		print #handle, replace("<?xml version='1.0' encoding='ISO-8859-1'?>","'",chr(34))
+		print #handle, "<!-- BeerXML Format - Generated by BrewSheet on "+Date+" "+Time+"  -->"
+		print #handle, "<RECIPES>"
+		
+		'############### Multiple recipe write ########################
+		for each i in dlg.getControl("ListBoxChooseRecipe").selectedItemsPos
+			recipeID = aListBoxChooseRecipeID(i) 
+		
+			print #handle, "<RECIPE>"
+			'msgbox recipeID
+			
+			'oSheet =  ThisComponent.Sheets.getByName("Main")
+			
+			fields = "NAME,CAST(VERSION AS CHAR),TYPE,BREWER,ASST_BREWER,CAST(BATCH_SIZE AS CHAR),CAST(BOIL_SIZE AS CHAR),CAST(BOIL_TIME AS CHAR),CAST(EFFICIENCY AS CHAR)"
+			tags = "NAME,VERSION,TYPE,BREWER,ASST_BREWER,BATCH_SIZE,BOIL_SIZE,BOIL_TIME,EFFICIENCY"
+			'ResultSet = dbGetResultSet("SELECT ID," & fields & " FROM RECIPE " _
+			sql = "SELECT ID," & fields & " FROM RECIPE " _
+			& "WHERE ID = '" & recipeID & "'"
+			ResultSet = dbGetResultSet(sql)
+			if ResultSet.next then
+				count=1
+				for each tag in split(tags,",")
+					count=count+1
+					print #handle, "<" & tag & ">" & resultSet.getString(count) & "</" & tag & ">"  & chr(13)
+				next
+			end if
+			
+			sql="SELECT STYLE_ID,EQUIPMENT_ID,MASH_ID FROM RECIPE WHERE ID = " & recipeID
+			rs = dbGetResultSet(sql)
+			rs.next
+			styleID = rs.getInt(1)
+			equipmentID = rs.getInt(2)
+			mashID = rs.getInt(3)
+			
+			ferms=""
+			hops=""
+			miscs=""
+			yeasts=""
+			equipment=""
+			style=""
+	
+			for each tableName in split("FERMENTABLE,HOP,MISC,YEAST",",")
+				fields = "CAST(TABLE_ID AS CHAR),CAST(AMOUNT AS CHAR),USE,CAST(TIME_FIELD AS CHAR),FORM"
+				sql = "SELECT " & fields & " FROM INGREDIENTS "_
+				& "WHERE RECIPE_ID = " & cStr(recipeID)_
+				& " AND TABLE_NAME = '" & tableName & "'"_
+				& " ORDER BY TIME_FIELD DESC"
+				debug(1,"recipeExportToXML: " & sql)
+				ResultSet = dbGetResultSet(sql)
+				while ResultSet.next
+					tableID = resultSet.getString(1)
+					amount = ResultSet.getString(2)
+					use = ResultSet.getString(3)
+					ztime = ResultSet.getString(4)
+					form = ResultSet.getString(5)
+					displayAmount = "" '	THIS IS GOING TO HAVE TO GO IN INGREDIENTS TABLE ME THINKS
+					displayTime = ""
+					useFor = ""
+					
+					select case tableName
+						case "HOP"
+							if dbGetSql("SELECT IMPERIAL_UNITS FROM PREFERENCES","BOOLEAN") then
+								units = " oz"
+							else
+								units = " gm"	
+							end if
+							ztime_mins = ztime
+							if UCase(use) = "DRY HOP" then
+								displaytime = cstr(cInt(ztime) / 1440) & " days"
+							else 
+								displaytime = cstr(ztime) & " min"
+							end if
+							sql="SELECT NAME,CAST(VERSION AS CHAR),ORIGIN,CAST(ALPHA AS CHAR),NOTES,TYPE," _
+							& "CAST(BETA AS CHAR),CAST(HSI AS CHAR),CAST(INVENTORY AS CHAR) FROM HOP WHERE ID=" & tableID
+							debug(1,"recipeExportToXML: " & sql)
+							rs=dbGetResultSet(sql)
+							if rs.next then
+								hops = hops & "<HOP>" & chr(13) & " <NAME>" & rs.getString(1) & "</NAME>" & chr(13) 
+								hops = hops & " <VERSION>1</VERSION>" & chr(13)
+								hops = hops & " <ORIGIN>" & rs.getString(3) & "</ORIGIN>" & chr(13)
+								hops = hops & " <ALPHA>" & rs.getString(4) & "</ALPHA>" & chr(13)
+								hops = hops & " <AMOUNT>" & amount & "</AMOUNT>" & chr(13)
+								hops = hops & " <USE>" & use & "</USE>" & chr(13)
+								hops = hops & " <TIME>" & ztime & "</TIME>" & chr(13)
+								hops = hops & " <NOTES>" & rs.getString(5) & "</NOTES>" & chr(13)
+								hops = hops & " <TYPE>" & rs.getString(6) & "</TYPE>" & chr(13)
+								hops = hops & " <FORM>" & form & "</FORM>" & chr(13)
+								hops = hops & " <BETA>" & rs.getString(7) & "</BETA>" & chr(13)
+								hops = hops & " <HSI>" & rs.getString(8) & "</HSI>" & chr(13)
+								hops = hops & " <DISPLAY_AMOUNT>" & ConvertUnits(amount,"WEIGHT_SMALL","READ") & units & "</DISPLAY_AMOUNT>" & chr(13)
+								hops = hops & " <INVENTORY>" & ConvertUnits(rs.getString(9),"WEIGHT_SMALL","READ") & "</INVENTORY>" & chr(13)
+								hops = hops & " <DISPLAY_TIME>" & displayTime & "</DISPLAY_TIME>" & chr(13)
+								hops = hops & "</HOP>" & chr(13)
+							else
+								msgbox "Warning. A hop included in this recipe was not found in the HOP table" & chr(13)_
+								& "The ID requested was: " & tableID
+							end if
+							
+							'For each FHMY changed version to just write 1 instead of what came from database
+							'& " <VERSION>" & rs.getString(2) & "</VERSION>" & chr(13) _
+							
+						case "MISC"
+							sql="SELECT NAME,CAST(VERSION AS CHAR),TYPE,USE,CAST(AMOUNT_IS_WEIGHT AS CHAR),NOTES,INVENTORY FROM MISC WHERE ID=" & tableID
+							debug(1,"recipeExportToXML: " & sql)
+							rs=dbGetResultSet(sql)
+							rs.next
+							miscs = miscs & "<MISC>" & chr(13) & " <NAME>" & rs.getString(1) & "</NAME>" & chr(13) _
+							& " <VERSION>1</VERSION>" & chr(13) _
+							& " <TYPE>" & rs.getString(3) & "</TYPE>" & chr(13) _
+							& " <USE>" & rs.getString(4) & "</USE>" & chr(13) _
+							& " <AMOUNT>" & amount & "</AMOUNT>" & chr(13) _
+							& " <TIME>" & ztime & "</TIME>" & chr(13) _
+							& " <AMOUNT_IS_WEIGHT>" & rs.getString(5) & "</AMOUNT_IS_WEIGHT>" & chr(13) _
+							& " <NOTES>" & rs.getString(6) & "</NOTES>" & chr(13) _
+							& " <DISPLAY_AMOUNT>" & displayAmount & "</DISPLAY_AMOUNT>" & chr(13) _
+							& " <INVENTORY>" & rs.getString(7) & "</INVENTORY>" & chr(13) _
+							& " <DISPLAY_TIME>" & displayTime & "</DISPLAY_TIME>" & chr(13) _
+							& " <USE_FOR>" & useFor & "</USE_FOR>" & chr(13) _
+							& "</MISC>" & chr(13)
+						
+						case "YEAST"
+							sql = "SELECT NAME,CAST(VERSION AS CHAR),TYPE,FORM,LABORATORY,"_
+							& "PRODUCT_ID,MIN_TEMPERATURE,MAX_TEMPERATURE,FLOCCULATION,ATTENUATION,NOTES,"_
+							& "ALC_TOLERANCE,BEST_FOR,MAX_REUSE,PRICE,INVENTORY FROM YEAST WHERE ID=" & tableID
+							debug(1,"recipeExportToXML: " & sql)
+							rs=dbGetResultSet(sql)
+							rs.next
+							yeasts = yeasts & "<YEAST>" & chr(13) & " <NAME>" & rs.getString(1) & "</NAME>" & chr(13) _
+							& " <VERSION>1</VERSION>" & chr(13) _
+							& " <TYPE>" & rs.getString(3) & "</TYPE>" & chr(13) _
+							& " <FORM>" & rs.getString(4) & "</FORM>" & chr(13) _
+							& " <AMOUNT>" & amount & "</AMOUNT>" & chr(13) _
+							& " <AMOUNT_IS_WEIGHT>FALSE</AMOUNT_IS_WEIGHT>" & chr(13) _
+							& " <LABORATORY>" & rs.getString(5) & "</LABORATORY>" & chr(13) _
+							& " <PRODUCT_ID>" & rs.getString(6) & "</PRODUCT_ID>" & chr(13) _
+							& " <MIN_TEMPERATURE>" & rs.getString(7) & "</MIN_TEMPERATURE>" & chr(13) _
+							& " <MAX_TEMPERATURE>" & rs.getString(8) & "</MAX_TEMPERATURE>" & chr(13) _
+							& " <FLOCCULATION>" & rs.getString(9) & "</FLOCCULATION>" & chr(13) _
+							& " <ATTENUATION>" & rs.getString(10) & "</ATTENUATION>" & chr(13) _
+							& " <NOTES>" & rs.getString(11) & "</NOTES>" & chr(13) _
+							& " <ALC_TOLERANCE>" & rs.getString(12) & "</ALC_TOLERANCE>" & chr(13) _
+							& " <BEST_FOR>" & rs.getString(13) & "</BEST_FOR>" & chr(13) _
+							& " <MAX_REUSE>" & rs.getString(14) & "</MAX_REUSE>" & chr(13) _
+							& " <PRICE>" & rs.getString(15) & "</PRICE>" & chr(13) _
+							& " <INVENTORY>" & rs.getString(16) & "</INVENTORY>" & chr(13) _
+							& "</YEAST>" & chr(13)
+						
+						case "FERMENTABLE"
+							if dbGetSql("SELECT IMPERIAL_UNITS FROM PREFERENCES","BOOLEAN") then
+								units = " lb"
+							else
+								units = " kg"
+							end if
+							displayAmount = cStr( ConvertUnits(amount,"WEIGHT","READ") ) & units
+		
+							sql = "SELECT " _
+							& "NAME,CAST(VERSION AS CHAR),TYPE,CAST(YIELD AS CHAR),CAST(COLOR AS CHAR)," _
+							& "CAST(ADD_AFTER_BOIL AS CHAR),ORIGIN,SUPPLIER,NOTES,CAST(COARSE_FINE_DIFF AS CHAR)," _
+							& "CAST(MOISTURE AS CHAR),CAST(DIASTATIC_POWER AS CHAR),CAST(PROTEIN AS CHAR),CAST(MAX_IN_BATCH AS CHAR),CAST(RECOMMEND_MASH AS CHAR)," _
+							& "CAST(IBU_GAL_PER_LB AS CHAR),CAST(POTENTIAL AS CHAR),DISPLAY_COLOR,EXTRACT_SUBSTITUTE," _
+							& "CAST(PRICE AS CHAR),INVENTORY " _
+							& "FROM FERMENTABLE WHERE ID=" & tableID 
+							debug(1,"recipeExportToXML: " & sql)
+							rs=dbGetResultSet(sql)
+							rs.next
+							ferms = ferms & "<FERMENTABLE>" & chr(13) _
+							& " <NAME>" & rs.getString(1) & "</NAME>" & chr(13) _
+							 & " <VERSION>1</VERSION>" & chr(13) _
+							 & " <TYPE>" & rs.getString(3) & "</TYPE>" & chr(13) _
+							 & " <AMOUNT>" & amount & "</AMOUNT>" & chr(13) _
+							 & " <YIELD>" & rs.getString(4) & "</YIELD>" & chr(13) _
+							 & " <COLOR>" & rs.getString(5) & "</COLOR>" & chr(13) _
+							& " <ADD_AFTER_BOIL>" & rs.getString(6) & "</ADD_AFTER_BOIL>" & chr(13) _
+							 & " <ORIGIN>" & rs.getString(7) & "</ORIGIN>" & chr(13) _
+							 & " <SUPPLIER>" & rs.getString(8) & "</SUPPLIER>" & chr(13) _
+							 & " <NOTES>" & rs.getString(9) & "</NOTES>" & chr(13) _
+							 & " <COARSE_FINE_DIFF>" & rs.getString(10) & "</COARSE_FINE_DIFF>" & chr(13) _
+							& " <MOISTURE>" & rs.getString(11) & "</MOISTURE>" & chr(13) _
+							 & " <DIASTATIC_POWER>" & rs.getString(12) & "</DIASTATIC_POWER>" & chr(13) _
+							 & " <PROTEIN>" & rs.getString(13) & "</PROTEIN>" & chr(13) _
+							 & " <MAX_IN_BATCH>" & rs.getString(14) & "</MAX_IN_BATCH>" & chr(13) _
+							 & " <RECOMMEND_MASH>" & rs.getString(15) & "</RECOMMEND_MASH>" & chr(13) _
+							& " <IBU_GAL_PER_LB>" & rs.getString(16) & "</IBU_GAL_PER_LB>" & chr(13) _
+							 & " <DISPLAY_AMOUNT>" & displayAmount & "</DISPLAY_AMOUNT>" & chr(13) _
+							 & " <POTENTIAL>" & rs.getString(17) & "</POTENTIAL>" & chr(13) _
+						     & " <DISPLAY_COLOR>" & rs.getString(18) & "</DISPLAY_COLOR>" & chr(13) _
+							 & " <EXTRACT_SUBSTITUTE>" & rs.getString(19) & "</EXTRACT_SUBSTITUTE>" & chr(13) _
+							& " <PRICE>" & rs.getString(20) & "</PRICE>" & chr(13) _
+							 & " <INVENTORY>" & rs.getString(21) & "</INVENTORY>" & chr(13) _
+							 & " <DISPLAY_TIME>" & displayTime & "</DISPLAY_TIME>" & chr(13) _
+							 & " <USE_FOR>" & useFor & "</USE_FOR>" & chr(13) _
+							& "</FERMENTABLE>" & chr(13)
+					end select
+				wend
+			next
+			print #handle, "<FERMENTABLES>" & chr(13) & ferms & "</FERMENTABLES>" & chr(13)
+			print #handle, "<HOPS>" & chr(13) & hops & "</HOPS>" & chr(13)
+			print #handle, "<MISCS>" & chr(13) & miscs & "</MISCS>" & chr(13)
+			print #handle, "<YEASTS>" & chr(13) & yeasts & "</YEASTS>" & chr(13)
+			
+	
+			'styleID = 1	'test only
+			sql="SELECT NAME,VERSION,CATEGORY,CATEGORY_NUMBER,STYLE_LETTER,STYLE_GUIDE,TYPE,"_
+			& "OG_MIN,OG_MAX,FG_MIN,FG_MAX,IBU_MIN,IBU_MAX,COLOR_MIN,COLOR_MAX,"_
+			& "CARB_MIN,CARB_MAX,ABV_MIN,ABV_MAX,NOTES,PROFILE,INGREDIENTS,EXAMPLES "_
+			& "FROM STYLE WHERE ID=" & styleID
+			debug(1,"recipeExportToXML: " & sql)
+	'		& "DISPLAY_OG_MIN,DISPLAY_OG_MAX,DISPLAY_FG_MIN,DISPLAY_FG_MAX,"_
+	'		& "DISPLAY_COLOR_MIN,DISPLAY_COLOR_MAX,OG_RANGE,FG_RANGE,IBU_RANGE,"_
+	'		& "CARB_RANGE,COLOR_RANGE,ABV_RANGE FROM STYLE WHERE ID=" & styleID
+	
+			rs=dbgetResultSet(sql)
+			rs.next
+			
+			style = style & "<STYLE>" & chr(13) _
+			& " <NAME>" & rs.getString(1) & "</NAME>" & chr(13) _
+			& " <VERSION>1</VERSION>" & chr(13) _
+			& " <CATEGORY>" & rs.getString(3) & "</CATEGORY>" & chr(13) _
+			& " <CATEGORY_NUMBER>" & rs.getString(4) & "</CATEGORY_NUMBER>" & chr(13) _
+			& " <STYLE_LETTER>" & rs.getString(5) & "</STYLE_LETTER>" & chr(13) _
+			& " <STYLE_GUIDE>" & rs.getString(6) & "</STYLE_GUIDE>" & chr(13) _
+			& " <TYPE>" & rs.getString(7) & "</TYPE>" & chr(13) _
+			& " <OG_MIN>" & format(rs.getFloat(8),"#.000") & "</OG_MIN>" & chr(13) _
+			& " <OG_MAX>" & format(rs.getFloat(9),"#.000") & "</OG_MAX>" & chr(13) _
+			& " <FG_MIN>" & format(rs.getFloat(10),"#.000") & "</FG_MIN>" & chr(13) _
+			& " <FG_MAX>" & format(rs.getFloat(11),"#.000") & "</FG_MAX>" & chr(13) _
+			& " <IBU_MIN>" & format(rs.getFloat(12),"###.0") & "</IBU_MIN>" & chr(13) _
+			& " <IBU_MAX>" & format(rs.getFloat(13),"###.0") & "</IBU_MAX>" & chr(13) _
+			& " <COLOR_MIN>" & format(rs.getFloat(14),"###.0") & "</COLOR_MIN>" & chr(13) _
+			& " <COLOR_MAX>" & format(rs.getFloat(15),"###.0") & "</COLOR_MAX>" & chr(13) _
+			& " <CARB_MIN>" & format(rs.getFloat(16),"###.0") & "</CARB_MIN>" & chr(13) _
+			& " <CARB_MAX>" & format(rs.getFloat(17),"###.0") & "</CARB_MAX>" & chr(13) _
+			& " <ABV_MIN>" & format(rs.getFloat(18),"###.0") & "</ABV_MIN>" & chr(13) _
+			& " <ABV_MAX>" & format(rs.getFloat(19),"###.0") & "</ABV_MAX>" & chr(13) _
+			& " <NOTES>" & rs.getString(20) & "</NOTES>" & chr(13) _
+			& " <PROFILE>" & rs.getString(21) & "</PROFILE>" & chr(13) _
+			& " <INGREDIENTS>" & rs.getString(22) & "</INGREDIENTS>" & chr(13) _
+			& " <EXAMPLES>" & rs.getString(23) & "</EXAMPLES>" & chr(13)
+			
+	'		& " <NAME>" & rs.getString(1) & "</NAME>" & chr(13) _
+			print #handle, style
+	
+	
+	'		'print #handle, "<NOTES>" & dlg.getControl("txtNotes").text & "</NOTES>"  & chr(13)
+	'		print #handle, " <EST_OG>" & dlg.getControl("lblOG").text & "</EST_OG>"  & chr(13)
+	'		print #handle, " <EST_FG>" & dlg.getControl("lblFG").text & "</EST_FG>"  & chr(13)
+	'		print #handle, " <EST_COLOR>" & dlg.getControl("lblColor").text & "</EST_COLOR>"  & chr(13)
+			'print #handle, "<NOTES>" & dlg.getControl("txtNotes").text & "</NOTES>"  & chr(13)
+	
+			print #handle, "</STYLE>"
+			
+	
+			sql="SELECT NAME,VERSION,BOIL_SIZE,BATCH_SIZE,TUN_VOLUME,TUN_WEIGHT,TUN_SPECIFIC_HEAT,"_
+			& "TOP_UP_WATER,TRUB_CHILLER_LOSS,EVAP_RATE,BOIL_TIME,CALC_BOIL_VOLUME,LAUTER_DEADSPACE,"_
+			& "TOP_UP_KETTLE,HOP_UTILIZATION,COOLING_LOSS_PCT,NOTES "_
+			& "FROM EQUIPMENT WHERE ID=" & equipmentID
+			debug(1,"recipeExportToXML: " & sql)
+	'		 <DISPLAY_BOIL_SIZE>10.87 gal</DISPLAY_BOIL_SIZE>
+	'		 <DISPLAY_BATCH_SIZE>9.00 gal</DISPLAY_BATCH_SIZE>
+	'		 <DISPLAY_TUN_VOLUME>10.00 gal</DISPLAY_TUN_VOLUME>
+	'		 <DISPLAY_TUN_WEIGHT>10 lbs</DISPLAY_TUN_WEIGHT>
+	'		 <DISPLAY_TOP_UP_WATER>0.00 gal</DISPLAY_TOP_UP_WATER>
+	'		 <DISPLAY_TRUB_CHILLER_LOSS>0.25 gal</DISPLAY_TRUB_CHILLER_LOSS>
+	'		 <DISPLAY_LAUTER_DEADSPACE>0.25 gal</DISPLAY_LAUTER_DEADSPACE>
+	'		 <DISPLAY_TOP_UP_KETTLE>0.00 gal</DISPLAY_TOP_UP_KETTLE>
+	
+			rs=dbgetResultSet(sql)
+			rs.next
+			
+			equipment = equipment & "<EQUIPMENT>" & chr(13) _
+			& " <NAME>" & rs.getString(1) & "</NAME>" & chr(13) _
+			& " <VERSION>1</VERSION>" & chr(13) _
+			& " <BOIL_SIZE>" & rs.getFloat(3) & "</BOIL_SIZE>" & chr(13) _
+			& " <BATCH_SIZE>" & rs.getFloat(4) & "</BATCH_SIZE>" & chr(13) _
+			& " <TUN_VOLUME>" & rs.getFloat(5) & "</TUN_VOLUME>" & chr(13) _
+			& " <TUN_WEIGHT>" & rs.getFloat(6) & "</TUN_WEIGHT>" & chr(13) _
+			& " <TUN_SPECIFIC_HEAT>" & rs.getFloat(7) & "</TUN_SPECIFIC_HEAT>" & chr(13) _
+			& " <TOP_UP_WATER>" & rs.getFloat(8) & "</TOP_UP_WATER>" & chr(13) _
+			& " <TRUB_CHILLER_LOSS>" & rs.getFloat(9) & "</TRUB_CHILLER_LOSS>" & chr(13) _
+			& " <EVAP_RATE>" & rs.getFloat(10) & "</EVAP_RATE>" & chr(13) _
+			& " <BOIL_TIME>" & rs.getInt(11) & "</BOIL_TIME>" & chr(13) _
+			& " <CALC_BOIL_VOLUME>" & rs.getBoolean(12) & "</CALC_BOIL_VOLUME>" & chr(13) _
+			& " <LAUTER_DEADSPACE>" & rs.getFloat(13) & "</LAUTER_DEADSPACE>" & chr(13) _
+			& " <TOP_UP_KETTLE>" & rs.getFloat(14) & "</TOP_UP_KETTLE>" & chr(13) _
+			& " <HOP_UTILIZATION>" & rs.getFloat(15) & "</HOP_UTILIZATION>" & chr(13) _
+			& " <COOLING_LOSS_PCT>" & rs.getString(16) & "</COOLING_LOSS_PCT>" & chr(13) _
+			& " <NOTES>" & rs.getString(17) & "</NOTES>" & chr(13)
+	
+			print #handle, equipment
+			print #handle, "</EQUIPMENT>"
+	
+	
+	
+			sql="SELECT NAME,VERSION,GRAIN_TEMP,TUN_TEMP,SPARGE_TEMP,PH,"_
+			& "TUN_WEIGHT,TUN_SPECIFIC_HEAT,EQUIP_ADJUST,NOTES "_
+			& "FROM MASH WHERE ID=" & mashID
+			debug(1,"recipeExportToXML: " & sql)
+			rs=dbgetResultSet(sql)
+			rs.next
+			
+			print #handle, "<MASH>" & chr(13) _
+			& " <NAME>" & rs.getString(1) & "</NAME>" & chr(13) _
+			& " <VERSION>1</VERSION>" & chr(13) _
+			& " <GRAIN_TEMP>" & rs.getFloat(3) & "</GRAIN_TEMP>" & chr(13) _
+			& " <TUN_TEMP>" & rs.getFloat(4) & "</TUN_TEMP>" & chr(13) _
+			& " <SPARGE_TEMP>" & rs.getFloat(5) & "</SPARGE_TEMP>" & chr(13) _
+			& " <PH>" & rs.getFloat(6) & "</PH>" & chr(13) _
+			& " <TUN_WEIGHT>" & rs.getFloat(7) & "</TUN_WEIGHT>" & chr(13) _
+			& " <TUN_SPECIFIC_HEAT>" & rs.getFloat(8) & "</TUN_SPECIFIC_HEAT>" & chr(13) _
+			& " <EQUIP_ADJUST>" & rs.getBoolean(9) & "</EQUIP_ADJUST>" & chr(13) _
+			& " <NOTES>" & rs.getString(10) & "</NOTES>" & chr(13)
+			
+			print #handle, "<MASH_STEPS>" & chr(13)
+			
+			sql="SELECT NAME,VERSION,TYPE,INFUSE_AMOUNT,STEP_TIME,STEP_TEMP,RAMP_TIME,"_
+			& "END_TEMP,DESCRIPTION,WATER_GRAIN_RATIO,DECOCTION_AMT,"_
+			& "INFUSE_TEMP,DISPLAY_STEP_TEMP,DISPLAY_INFUSE_AMT "_
+			& "FROM MASH_STEP WHERE MASH_ID=" & mashID & " ORDER BY ID"
+			
+			rs=dbgetResultSet(sql)
+			while (rs.next)
+				print #handle, "<MASH_STEP>" & chr(13) _
+				& " <NAME>" & rs.getString(1) & "</NAME>" & chr(13) _
+				& " <VERSION>1</VERSION>" & chr(13) _
+				& " <TYPE>" & rs.getString(3) & "</TYPE>" & chr(13) _
+				& " <INFUSE_AMOUNT>" & rs.getFloat(4) & "</INFUSE_AMOUNT>" & chr(13) _
+				& " <STEP_TIME>" & rs.getFloat(5) & "</STEP_TIME>" & chr(13) _
+				& " <STEP_TEMP>" & rs.getFloat(6) & "</STEP_TEMP>" & chr(13) _
+				& " <RAMP_TIME>" & rs.getFloat(7) & "</RAMP_TIME>" & chr(13) _
+				& " <END_TEMP>" & rs.getFloat(8) & "</END_TEMP>" & chr(13) _
+				& " <DESCRIPTION>" & rs.getString(9) & "</DESCRIPTION>" & chr(13) _
+				& " <WATER_GRAIN_RATIO>" & rs.getFloat(10) & "</WATER_GRAIN_RATIO>" & chr(13) _
+				& " <DECOCTION_AMT>" & rs.getString(11) & "</DECOCTION_AMT>" & chr(13) _
+				& " <INFUSE_TEMP>" & rs.getString(12) & "</INFUSE_TEMP>" & chr(13) _
+				& " <DISPLAY_STEP_TEMP>" & rs.getString(13) & "</DISPLAY_STEP_TEMP>" & chr(13) _
+				& " <DISPLAY_INFUSE_AMT>" & rs.getString(14) & "</DISPLAY_INFUSE_AMT>" & chr(13)_
+				& "</MASH_STEP>" & chr(13)
+			wend		
+			print #handle, "</MASH_STEPS>" & chr(13)
+			print #handle, "</MASH>" & chr(13)
+			
+			sql="SELECT NOTES,TASTE_NOTES,TASTE_RATING,OG,FG,CARBONATION,FERMENTATION_STAGES,"_
+			& "PRIMARY_AGE,PRIMARY_TEMP,SECONDARY_AGE,SECONDARY_TEMP,TERTIARY_AGE,TERTIARY_TEMP,"_
+			& "AGE,AGE_TEMP,CARBONATION_USED,FORCED_CARBONATION,PRIMING_SUGAR_NAME,PRIMING_SUGAR_EQUIV,"_
+			& "KEG_PRIMING_FACTOR,CARBONATION_TEMP,DISPLAY_CARB_TEMP,DATE,EST_OG,EST_FG,EST_COLOR,"_
+			& "IBU,IBU_METHOD,EST_ABV,ABV,ACTUAL_EFFICIENCY,CALORIES,DISPLAY_BATCH_SIZE,"_
+			& "DISPLAY_BOIL_SIZE,DISPLAY_OG,DISPLAY_FG,DISPLAY_PRIMARY_TEMP,DISPLAY_SECONDARY_TEMP,"_
+			& "DISPLAY_TERTIARY_TEMP,DISPLAY_AGE_TEMP "_
+			& "FROM RECIPE WHERE ID=" & recipeID
+			debug(1,"recipeExportToXML: " & sql)
+			rs=dbgetResultSet(sql)
+			rs.next
+			
+			print #handle, " <NOTES>" & rs.getString(1) & "</NOTES>" & chr(13) _
+			& " <TASTE_NOTES>" & rs.getString(2) & "</TASTE_NOTES>" & chr(13) _
+			& " <TASTE_RATING>" & rs.getFloat(3) & "</TASTE_RATING>" & chr(13) _
+			& " <OG>" & rs.getFloat(4) & "</OG>" & chr(13) _
+			& " <FG>" & rs.getFloat(5) & "</FG>" & chr(13) _
+			& " <CARBONATION>" & rs.getFloat(6) & "</CARBONATION>" & chr(13) _
+			& " <FERMENTATION_STAGES>" & rs.getInt(7) & "</FERMENTATION_STAGES>" & chr(13) _
+			& " <PRIMARY_AGE>" & rs.getInt(8) & "</PRIMARY_AGE>" & chr(13) _
+			& " <PRIMARY_TEMP>" & rs.getFloat(9) & "</PRIMARY_TEMP>" & chr(13) _
+			& " <SECONDARY_AGE>" & rs.getInt(10) & "</SECONDARY_AGE>" & chr(13) _
+			& " <SECONDARY_TEMP>" & rs.getFloat(11) & "</SECONDARY_TEMP>" & chr(13) _
+			& " <TERTIARY_AGE>" & rs.getInt(12) & "</TERTIARY_AGE>" & chr(13) _
+			& " <TERTIARY_TEMP>" & rs.getFloat(13) & "</TERTIARY_TEMP>" & chr(13) _
+			& " <AGE>" & rs.getInt(14) & "</AGE>" & chr(13) _
+			& " <AGE_TEMP>" & rs.getFloat(15) & "</AGE_TEMP>" & chr(13) _
+			& " <CARBONATION_USED>" & rs.getString(16) & "</CARBONATION_USED>" & chr(13) _
+			& " <FORCED_CARBONATION>" & rs.getBoolean(17) & "</FORCED_CARBONATION>" & chr(13) _
+			& " <PRIMING_SUGAR_NAME>" & rs.getString(18) & "</PRIMING_SUGAR_NAME>" & chr(13) _
+			& " <PRIMING_SUGAR_EQUIV>" & rs.getFloat(19) & "</PRIMING_SUGAR_EQUIV>" & chr(13) _
+			& " <KEG_PRIMING_FACTOR>" & rs.getFloat(20) & "</KEG_PRIMING_FACTOR>" & chr(13) _
+			& " <CARBONATION_TEMP>" & rs.getFloat(21) & "</CARBONATION_TEMP>" & chr(13) _
+			& " <DISPLAY_CARB_TEMP>" & rs.getString(22) & "</DISPLAY_CARB_TEMP>" & chr(13) _
+			& " <DATE>" & rs.getString(23) & "</DATE>" & chr(13) _
+			& " <EST_OG>" & rs.getString(24) & "</EST_OG>" & chr(13) _
+			& " <EST_FG>" & rs.getString(25) & "</EST_FG>" & chr(13) _
+			& " <EST_COLOR>" & rs.getString(26) & "</EST_COLOR>" & chr(13) _
+			& " <IBU>" & rs.getString(27) & "</IBU>" & chr(13) _
+			& " <IBU_METHOD>" & rs.getString(28) & "</IBU_METHOD>" & chr(13) _
+			& " <EST_ABV>" & rs.getString(29) & "</EST_ABV>" & chr(13) _
+			& " <ABV>" & rs.getString(30) & "</ABV>" & chr(13) _
+			& " <ACTUAL_EFFICIENCY>" & rs.getString(31) & "</ACTUAL_EFFICIENCY>" & chr(13) _
+			& " <CALORIES>" & rs.getString(32) & "</CALORIES>" & chr(13) _
+			& " <DISPLAY_BATCH_SIZE>" & rs.getString(33) & "</DISPLAY_BATCH_SIZE>" & chr(13) _
+			& " <DISPLAY_BOIL_SIZE>" & rs.getString(34) & "</DISPLAY_BOIL_SIZE>" & chr(13) _
+			& " <DISPLAY_OG>" & rs.getString(35) & "</DISPLAY_OG>" & chr(13) _
+			& " <DISPLAY_FG>" & rs.getString(36) & "</DISPLAY_FG>" & chr(13) _
+			& " <DISPLAY_PRIMARY_TEMP>" & rs.getString(37) & "</DISPLAY_PRIMARY_TEMP>" & chr(13) _
+			& " <DISPLAY_SECONDARY_TEMP>" & rs.getString(38) & "</DISPLAY_SECONDARY_TEMP>" & chr(13) _
+			& " <DISPLAY_TERTIARY_TEMP>" & rs.getString(39) & "</DISPLAY_TERTIARY_TEMP>" & chr(13) _
+			& " <DISPLAY_AGE_TEMP>" & rs.getString(40) & "</DISPLAY_AGE_TEMP>" & chr(13)
+			print #handle, "</RECIPE>"
+			
+		next	'############### Multiple recipe write loop #################
+	
+		print #handle, "</RECIPES>"
+		Close #handle
+		xmlFileName = ConvertFromUrl(fname)
+	end if
+end function
+
+'############################## Really long comments will be placed here #####################################
+'comment 20160701alpha
+
+'AMOUNT is no issue in FERMENTABLE or HOP as it is always stored as kg. (obviously generally a small
+'number for HOP, but for MISC we have to deal with many different units including
+' "mg,g,oz,lb,kg,ml,tsp,tbsp,Cup,pt,qt,l,gal,Items"
+'
+'Then we have "oz", the only ambiguous one in the bunch... can be weight or volume... hence, the need for
+'additional field "AMOUNT_IS_WEIGHT".
+'
+'We have two fields in BEERXML MISC section that can be used to determine what units "AMOUNT" is given in,
+'DISPLAY_AMOUNT and INVENTORY. Neither is a required field so it is possible another program exporting
+'the recipe might not include either. Decided to attempt to parse DISPLAY_AMOUNT which would read 
+'for example "<DISPLAY_AMOUNT>0.50 tsp</DISPLAY_AMOUNT>" and after parsing from XML reads "0.50 tsp"
+'Note: for the example given, the amount field in XML reads "<AMOUNT>0.002464</AMOUNT>"
+'We split "0.50 tsp" on the space to get the units "tsp"
+'
+'Now that we know the amount is "tsp", non-ambiguously a volume measurement, we can assume the given
+'amount of "0.002464" unit is liters. Being lazy, I Google "1/2 tsp to liters" and viola it returns
+'answer of 0.00246446. (more decimal accuracy)
+
+'We don't have to do any math to AMOUNT now when writing to the db, but later when we are displaying
+'the recipe, we will have to in order to correctly display "0.50 tsp"
+
+'If you've read this far you might be asking - Why not just store the DISPLAY_AMOUNT field as text
+'and not worry about this crap?
+
+'Two reasons. First, in order to scale a recipe, you have to multiply ingredient amounts by some factor.
+'I can't multiply "0.50 tsp" * 2. The second reason, is that while not complete, I want this work
+'to be usable internationally, metric/SI or Imperial/USA. Gawd, I wish we had adopted Metric years ago.
+
+'IF split doesn't produce an array with two indices (0,1), then uBound function will be < 1
+'and we mark units as undefined. User will have to interpret and correct.
+
+'#############################################################################################################
+
+'Comment ID: 20160701beta
+'Electing to store fermentable and hop inventory as kg, and perform conversion to oz if Imperial US units.
+'Will also store price as price/kg and perform conversion in program presentation to oz unit (if Imperial)
+'If Metric units, this will display as price/kg which might not be most preferred. If smaller common unit size such as 35 grams
+'is desired (not knowing common packaging for hops in UK (for instance).. could use feedback on what makes most sense....
+'
+'DILEMA HERE IS HOW TO BEST STORE PRICE & INVENTORY. BEERXML DEFINITION INCLUDES
+'INVENTORY IN FORM OF "numeric_value units" eg: "14 lb"
+'SO... Do we store into database inventory as kg (as we do for amount in recipe)
+'If so, then it might make sense to also store price as function of kg units
+'This is also made more complicated in the MISC table, where inits can vary
+'as tsp, tbsp, Cup, OZ (fluid or weight), kg, lb, etc. We learn units for a misc item
+'from INVENTORY field in a MISC section of a recipe.
+
